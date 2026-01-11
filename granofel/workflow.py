@@ -179,6 +179,92 @@ class BaseNode:
 		return {"messages": fmt + [response]}
 
 
+class ScatterNode(BaseNode):
+	"""Node that executes a workflow in parallel with per-instance state variations.
+
+	Each branch runs the contained workflow with isolated state.
+	Results are combined via gather() using reducers (messages append, others replace).
+
+	Default behavior: scatters over state.items, giving each branch {"item": <value>}.
+	Override scatter() for custom splitting logic.
+	"""
+
+	class State(BaseNode.State):
+		items: List[Any] = []
+
+	def __init__(
+		self,
+		nodes: List[BaseNode],
+		name: str = ""
+	):
+		self.name = name
+		self.nodes = nodes
+		self._workflow = None
+		self._llm_dict = None
+		# BaseNode compatibility - not used by ScatterNode directly
+		self.messages = []
+		self.llm_type = LLMClass.REACT
+		self.llm = None
+
+	def bind_llm(self, llm_dict: Dict[str, Runnable]):
+		"""Bind LLM and create internal workflow."""
+		self._llm_dict = llm_dict
+		self._workflow = BaseWorkflow(
+			name=f"{self.name}_scatter",
+			llm=llm_dict,
+			node=self.nodes
+		)
+
+	def scatter(self, state: State) -> List[dict]:
+		"""Split state into per-branch fragments. Default: one branch per item."""
+		return [{"item": item} for item in state.items]
+
+	def gather(self, results: List[dict]) -> dict:
+		"""Combine results from parallel branches. Default uses reducers."""
+		if not results:
+			return {}
+
+		combined = {}
+		for result in results:
+			for field, value in result.items():
+				if field == "messages":
+					reducer = _messages_reducer
+				else:
+					reducer = _default_reducer
+				current = combined.get(field)
+				combined[field] = reducer(current, value)
+
+		return combined
+
+	async def invoke(self, state: State, config: RunnableConfig = None) -> dict:
+		"""Execute workflow in parallel for each scatter fragment."""
+		config = config or {}
+
+		# Get base state dict from the sliced state
+		base_state = state.model_dump()
+
+		# Get per-branch fragments
+		fragments = self.scatter(state)
+
+		async def run_branch(fragment: dict) -> dict:
+			branch_state = {**base_state, **fragment}
+			# Fresh runner per branch for state isolation
+			runner = self._workflow.compile()
+			return await runner.run(branch_state, config)
+
+		# Execute all branches in parallel
+		tasks = [run_branch(fragment) for fragment in fragments]
+		results = await asyncio.gather(*tasks)
+
+		return self.gather(results)
+
+	def invoke_sync(self, state: State, config: RunnableConfig = None) -> dict:
+		"""Synchronous invoke for testing or non-async contexts."""
+		return asyncio.get_event_loop().run_until_complete(
+			self.invoke(state, config)
+		)
+
+
 class WorkflowRunner:
 	"""Executes compiled workflow with StateManager coordination."""
 
@@ -244,13 +330,20 @@ class BaseWorkflow:
 				anon += 1
 
 	def _build_state_class(self, nodes: List[BaseNode]) -> Type[BaseModel]:
-		"""Build composite state class from all node states."""
-		used = set()
-		component = []
+		"""Build composite state class from all node states.
+
+		Orders by inheritance depth (most specific first) for valid MRO.
+		"""
+		seen = set()
+		candidates = []
 		for n in nodes:
-			if n.State not in used:
-				used.add(n.State)
-				component.append(n.State)
+			if n.State not in seen:
+				seen.add(n.State)
+				candidates.append(n.State)
+
+		# Sort by MRO length descending - subclasses have longer MRO
+		component = sorted(candidates, key=lambda c: len(c.__mro__), reverse=True)
+
 		return type(
 			f"{self.name}_full_state",
 			(self.State, *component,),
