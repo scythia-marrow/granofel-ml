@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator
+from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator, Optional
 
 from langchain_core.runnables import Runnable, RunnableConfig
 from pydantic import BaseModel
@@ -84,9 +84,19 @@ def _messages_reducer(current: list, delta: list) -> list:
 
 
 class StateManager:
-	"""Central state coordinator with update queue and reducers."""
+	"""Central state coordinator with update queue and reducers.
 
-	def __init__(self, initial_state: dict = None, reducers: dict = None):
+	Supports two modes:
+	1. Synchronous (default): process_updates() called explicitly after each node
+	2. Polling (clock_interval > 0): background task processes queue on steady clock
+	"""
+
+	def __init__(
+		self,
+		initial_state: dict = None,
+		reducers: dict = None,
+		clock_interval: Optional[float] = None
+	):
 		self._snapshot = Snapshot(initial_state or {}, version=0)
 		self._queue: asyncio.Queue[UpdateMessage] = asyncio.Queue()
 		self._reducers: Dict[str, Callable[[Any, Any], Any]] = {
@@ -94,6 +104,11 @@ class StateManager:
 		}
 		if reducers:
 			self._reducers.update(reducers)
+
+		# Polling mode configuration
+		self._clock_interval = clock_interval
+		self._polling_task: Optional[asyncio.Task] = None
+		self._polling_active = False
 
 	def register_reducer(self, field: str, reducer: Callable[[Any, Any], Any]):
 		"""Register a custom reducer for a field."""
@@ -130,6 +145,50 @@ class StateManager:
 
 		self._snapshot = Snapshot(new_data, version=self._snapshot.version + 1)
 		return self._snapshot
+
+	@property
+	def is_polling(self) -> bool:
+		"""Check if polling mode is active."""
+		return self._polling_active
+
+	@property
+	def clock_interval(self) -> Optional[float]:
+		"""Get the configured clock interval."""
+		return self._clock_interval
+
+	async def _polling_loop(self):
+		"""Background loop that processes updates on steady clock."""
+		while self._polling_active:
+			await self.process_updates()
+			await asyncio.sleep(self._clock_interval)
+
+	def start_polling(self) -> asyncio.Task:
+		"""Start background polling task. Returns the task handle."""
+		if self._clock_interval is None or self._clock_interval <= 0:
+			raise ValueError("clock_interval must be positive to enable polling")
+		if self._polling_active:
+			raise RuntimeError("Polling already active")
+
+		self._polling_active = True
+		self._polling_task = asyncio.create_task(self._polling_loop())
+		return self._polling_task
+
+	async def stop_polling(self):
+		"""Stop background polling and process any remaining updates."""
+		if not self._polling_active:
+			return
+
+		self._polling_active = False
+		if self._polling_task:
+			self._polling_task.cancel()
+			try:
+				await asyncio.shield(asyncio.sleep(0))  # Let cancellation propagate
+			except asyncio.CancelledError:
+				pass  # Expected when task is cancelled
+			self._polling_task = None
+
+		# Process any remaining updates
+		await self.process_updates()
 
 
 # --- Node and Workflow ---
@@ -282,7 +341,12 @@ class ScatterNode(BaseNode):
 
 
 class WorkflowRunner:
-	"""Executes compiled workflow with StateManager coordination."""
+	"""Executes compiled workflow with StateManager coordination.
+
+	Supports two execution modes:
+	1. Synchronous (default): process updates after each node
+	2. Polling: start background polling, nodes submit to queue independently
+	"""
 
 	def __init__(self, name: str, nodes: List[BaseNode], manager: StateManager, full_state_class: Type[BaseModel]):
 		self.name = name
@@ -295,29 +359,39 @@ class WorkflowRunner:
 		config = config or {}
 		self.manager.init_snapshot(initial_state)
 
-		for node in self.nodes:
-			snapshot = self.manager.get_snapshot()
-			state_slice = snapshot.get_slice(node.State)
+		use_polling = self.manager.clock_interval is not None
 
-			update = await node.invoke(state_slice, config)
+		if use_polling:
+			self.manager.start_polling()
 
-			self.manager.submit_update_sync(UpdateMessage(
-				source=node.name,
-				updates=update
-			))
-			await self.manager.process_updates()
+		try:
+			for node in self.nodes:
+				snapshot = self.manager.get_snapshot()
+				state_slice = snapshot.get_slice(node.State)
 
-			yield {node.name: self.manager.get_snapshot().to_dict()}
+				update = await node.invoke(state_slice, config)
+
+				self.manager.submit_update_sync(UpdateMessage(
+					source=node.name,
+					updates=update
+				))
+
+				if not use_polling:
+					# Synchronous mode: process immediately
+					await self.manager.process_updates()
+
+				yield {node.name: self.manager.get_snapshot().to_dict()}
+		finally:
+			if use_polling:
+				await self.manager.stop_polling()
 
 	async def run(self, initial_state: dict, config: RunnableConfig = None) -> dict:
 		"""Execute workflow and return final state."""
 		config = config or {}
-		final = None
-		async for update in self.stream(initial_state, config):
-			final = update
-		if final:
-			return list(final.values())[0]
-		return initial_state
+		async for _ in self.stream(initial_state, config):
+			pass  # Consume all updates
+		# Return final state from manager (includes any updates processed by stop_polling)
+		return self.manager.get_snapshot().to_dict()
 
 
 class BaseWorkflow:
@@ -366,9 +440,15 @@ class BaseWorkflow:
 			{}
 		)
 
-	def compile(self) -> WorkflowRunner:
-		"""Compile workflow into executable runner."""
-		manager = StateManager()
+	def compile(self, clock_interval: Optional[float] = None) -> WorkflowRunner:
+		"""Compile workflow into executable runner.
+
+		Args:
+			clock_interval: If set, enables steady-clock polling mode where
+				state updates are processed on a regular interval (in seconds)
+				rather than after each node execution.
+		"""
+		manager = StateManager(clock_interval=clock_interval)
 		return WorkflowRunner(
 			name=self.name,
 			nodes=self.nodes,
