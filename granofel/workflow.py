@@ -194,17 +194,33 @@ class ScatterNode(BaseNode):
 
 	def __init__(
 		self,
-		nodes: List[BaseNode],
+		nodes: "BaseWorkflow | BaseNode | Sequence[BaseNode]",
 		name: str = ""
 	):
 		self.name = name
-		self.nodes = nodes
 		self._workflow = None
 		self._llm_dict = None
 		# BaseNode compatibility - not used by ScatterNode directly
 		self.messages = []
 		self.llm_type = LLMClass.REACT
 		self.llm = None
+
+		# Normalize input to either a workflow or list of nodes
+		if isinstance(nodes, BaseWorkflow):
+			# Use existing workflow directly
+			self._llm_dict = nodes.llm
+			self.nodes = nodes.nodes
+		elif isinstance(nodes, BaseNode):
+			# Single node - wrap in list
+			self.nodes = [nodes]
+		elif isinstance(nodes, Sequence):
+			# Sequence of nodes (original behavior)
+			self.nodes = list(nodes)
+		else:
+			raise TypeError(
+				f"nodes must be BaseWorkflow, BaseNode, or Sequence[BaseNode], "
+				f"got {type(nodes).__name__}"
+			)
 
 	def bind_llm(self, llm_dict: Dict[str, Runnable]):
 		"""Bind LLM and create internal workflow."""

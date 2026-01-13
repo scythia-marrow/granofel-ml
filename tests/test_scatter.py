@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from langchain_core.messages import AIMessage
-from granofel.workflow import BaseNode, ScatterNode, BaseWorkflow
+from granofel.workflow import BaseNode, ScatterNode, BaseWorkflow, LLMClass
 
 
 class ItemProcessor(BaseNode):
@@ -200,3 +200,61 @@ async def test_scatter_custom_state_fields(mock_llm_dict):
 	# Both branches should see the shared context
 	assert len(contexts_seen) == 2
 	assert all(ctx == "global_value" for ctx in contexts_seen)
+
+
+@pytest.mark.asyncio
+async def test_scatter_accepts_single_node(mock_llm_dict):
+	"""Test that ScatterNode accepts a single BaseNode (not wrapped in list)."""
+	node = ItemProcessor([("human", "Process {state.item}")], name="processor")
+	# Pass single node instead of list
+	scatter = ScatterNode(node, name="scatter")
+	scatter.bind_llm(mock_llm_dict)
+
+	state = ScatterNode.State(items=["a", "b"])
+	result = await scatter.invoke(state)
+
+	assert "messages" in result
+	assert len(result["messages"]) == 4  # 2 per branch
+
+
+@pytest.mark.asyncio
+async def test_scatter_accepts_workflow(mock_llm_dict):
+	"""Test that ScatterNode accepts an existing BaseWorkflow."""
+	node = ItemProcessor([("human", "Process {state.item}")], name="processor")
+	workflow = BaseWorkflow("existing", mock_llm_dict, node=[node])
+
+	# Pass workflow instead of nodes - extracts nodes from workflow
+	scatter = ScatterNode(workflow, name="scatter")
+	scatter.bind_llm(mock_llm_dict)
+
+	state = ScatterNode.State(items=["x", "y", "z"])
+	result = await scatter.invoke(state)
+
+	assert "messages" in result
+	assert len(result["messages"]) == 6  # 2 per branch, 3 branches
+
+
+@pytest.mark.asyncio
+async def test_scatter_workflow_input_extracts_nodes(mock_llm_dict):
+	"""Test that passing a workflow extracts and uses its nodes."""
+	node = ItemProcessor([("human", "Process {state.item}")], name="processor")
+	workflow = BaseWorkflow("existing", mock_llm_dict, node=[node])
+
+	scatter = ScatterNode(workflow, name="scatter")
+	# Must still bind LLM to create internal workflow
+	scatter.bind_llm(mock_llm_dict)
+
+	state = ScatterNode.State(items=["a", "b"])
+	result = await scatter.invoke(state)
+
+	assert "messages" in result
+	assert len(result["messages"]) == 4  # 2 per branch
+
+
+def test_scatter_rejects_invalid_input():
+	"""Test that ScatterNode raises TypeError for invalid input."""
+	with pytest.raises(TypeError, match="nodes must be"):
+		ScatterNode(123, name="invalid")
+
+	with pytest.raises(TypeError, match="nodes must be"):
+		ScatterNode({"not": "valid"}, name="invalid")
