@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator, Union
+from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator
 
 from langchain_core.runnables import Runnable, RunnableConfig
 from pydantic import BaseModel
@@ -194,7 +194,7 @@ class ScatterNode(BaseNode):
 
 	def __init__(
 		self,
-		nodes: Union["BaseWorkflow", "BaseNode", List["BaseNode"]],
+		nodes: "BaseWorkflow | BaseNode | Sequence[BaseNode]",
 		name: str = ""
 	):
 		self.name = name
@@ -208,25 +208,28 @@ class ScatterNode(BaseNode):
 		# Normalize input to either a workflow or list of nodes
 		if isinstance(nodes, BaseWorkflow):
 			# Use existing workflow directly
-			self._workflow = nodes
 			self._llm_dict = nodes.llm
 			self.nodes = nodes.nodes
 		elif isinstance(nodes, BaseNode):
 			# Single node - wrap in list
 			self.nodes = [nodes]
+		elif isinstance(nodes, Sequence):
+			# Sequence of nodes (original behavior)
+			self.nodes = list(nodes)
 		else:
-			# List of nodes (original behavior)
-			self.nodes = nodes
+			raise TypeError(
+				f"nodes must be BaseWorkflow, BaseNode, or Sequence[BaseNode], "
+				f"got {type(nodes).__name__}"
+			)
 
 	def bind_llm(self, llm_dict: Dict[str, Runnable]):
-		"""Bind LLM and create internal workflow if not already set."""
+		"""Bind LLM and create internal workflow."""
 		self._llm_dict = llm_dict
-		if self._workflow is None:
-			self._workflow = BaseWorkflow(
-				name=f"{self.name}_scatter",
-				llm=llm_dict,
-				node=self.nodes
-			)
+		self._workflow = BaseWorkflow(
+			name=f"{self.name}_scatter",
+			llm=llm_dict,
+			node=self.nodes
+		)
 
 	def scatter(self, state: State) -> List[dict]:
 		"""Split state into per-branch fragments. Default: one branch per item."""

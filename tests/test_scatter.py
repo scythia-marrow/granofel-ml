@@ -223,9 +223,9 @@ async def test_scatter_accepts_workflow(mock_llm_dict):
 	node = ItemProcessor([("human", "Process {state.item}")], name="processor")
 	workflow = BaseWorkflow("existing", mock_llm_dict, node=[node])
 
-	# Pass workflow instead of nodes
+	# Pass workflow instead of nodes - extracts nodes from workflow
 	scatter = ScatterNode(workflow, name="scatter")
-	# No need to call bind_llm - workflow already has LLM bound
+	scatter.bind_llm(mock_llm_dict)
 
 	state = ScatterNode.State(items=["x", "y", "z"])
 	result = await scatter.invoke(state)
@@ -235,26 +235,26 @@ async def test_scatter_accepts_workflow(mock_llm_dict):
 
 
 @pytest.mark.asyncio
-async def test_scatter_workflow_input_reuses_llm(mock_llm_dict):
-	"""Test that passing a workflow reuses its LLM binding."""
-	invocations = []
-
-	class TrackingNode(BaseNode):
-		class State(BaseNode.State):
-			item: str = ""
-
-		async def invoke(self, state, config=None):
-			invocations.append(self.llm)
-			return await super().invoke(state, config)
-
-	node = TrackingNode([("human", "msg")], name="tracker")
+async def test_scatter_workflow_input_extracts_nodes(mock_llm_dict):
+	"""Test that passing a workflow extracts and uses its nodes."""
+	node = ItemProcessor([("human", "Process {state.item}")], name="processor")
 	workflow = BaseWorkflow("existing", mock_llm_dict, node=[node])
 
 	scatter = ScatterNode(workflow, name="scatter")
+	# Must still bind LLM to create internal workflow
+	scatter.bind_llm(mock_llm_dict)
 
 	state = ScatterNode.State(items=["a", "b"])
-	await scatter.invoke(state)
+	result = await scatter.invoke(state)
 
-	# Should have used the same LLM from the workflow
-	assert len(invocations) == 2
-	assert all(llm == mock_llm_dict[LLMClass.REACT] for llm in invocations)
+	assert "messages" in result
+	assert len(result["messages"]) == 4  # 2 per branch
+
+
+def test_scatter_rejects_invalid_input():
+	"""Test that ScatterNode raises TypeError for invalid input."""
+	with pytest.raises(TypeError, match="nodes must be"):
+		ScatterNode(123, name="invalid")
+
+	with pytest.raises(TypeError, match="nodes must be"):
+		ScatterNode({"not": "valid"}, name="invalid")
