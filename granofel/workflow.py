@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator
+from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator, Optional
 
 from langchain_core.runnables import Runnable, RunnableConfig
 from pydantic import BaseModel
@@ -84,9 +84,21 @@ def _messages_reducer(current: list, delta: list) -> list:
 
 
 class StateManager:
-	"""Central state coordinator with update queue and reducers."""
+	"""Central state coordinator with update queue and reducers.
 
-	def __init__(self, initial_state: dict = None, reducers: dict = None):
+	Workflows submit updates to the queue at block boundaries (workflow completion).
+	Updates are processed via reducers (messages append, others replace).
+
+	Optional polling mode (clock_interval > 0) enables background processing
+	for concurrent workflow scenarios.
+	"""
+
+	def __init__(
+		self,
+		initial_state: dict = None,
+		reducers: dict = None,
+		clock_interval: Optional[float] = None
+	):
 		self._snapshot = Snapshot(initial_state or {}, version=0)
 		self._queue: asyncio.Queue[UpdateMessage] = asyncio.Queue()
 		self._reducers: Dict[str, Callable[[Any, Any], Any]] = {
@@ -94,6 +106,11 @@ class StateManager:
 		}
 		if reducers:
 			self._reducers.update(reducers)
+
+		# Polling mode configuration
+		self._clock_interval = clock_interval
+		self._polling_task: Optional[asyncio.Task] = None
+		self._polling_active = False
 
 	def register_reducer(self, field: str, reducer: Callable[[Any, Any], Any]):
 		"""Register a custom reducer for a field."""
@@ -130,6 +147,50 @@ class StateManager:
 
 		self._snapshot = Snapshot(new_data, version=self._snapshot.version + 1)
 		return self._snapshot
+
+	@property
+	def is_polling(self) -> bool:
+		"""Check if polling mode is active."""
+		return self._polling_active
+
+	@property
+	def clock_interval(self) -> Optional[float]:
+		"""Get the configured clock interval."""
+		return self._clock_interval
+
+	async def _polling_loop(self):
+		"""Background loop that processes updates on steady clock."""
+		while self._polling_active:
+			await self.process_updates()
+			await asyncio.sleep(self._clock_interval)
+
+	def start_polling(self) -> asyncio.Task:
+		"""Start background polling task. Returns the task handle."""
+		if self._clock_interval is None or self._clock_interval <= 0:
+			raise ValueError("clock_interval must be positive to enable polling")
+		if self._polling_active:
+			raise RuntimeError("Polling already active")
+
+		self._polling_active = True
+		self._polling_task = asyncio.create_task(self._polling_loop())
+		return self._polling_task
+
+	async def stop_polling(self):
+		"""Stop background polling and process any remaining updates."""
+		if not self._polling_active:
+			return
+
+		self._polling_active = False
+		if self._polling_task:
+			self._polling_task.cancel()
+			try:
+				await asyncio.shield(asyncio.sleep(0))  # Let cancellation propagate
+			except asyncio.CancelledError:
+				pass  # Expected when task is cancelled
+			self._polling_task = None
+
+		# Process any remaining updates
+		await self.process_updates()
 
 
 # --- Node and Workflow ---
@@ -282,7 +343,13 @@ class ScatterNode(BaseNode):
 
 
 class WorkflowRunner:
-	"""Executes compiled workflow with StateManager coordination."""
+	"""Executes compiled workflow with local state accumulation.
+
+	Workflows are basic blocks: nodes within a workflow share local state,
+	and updates sync to global StateManager only at workflow completion.
+	This provides deterministic execution within a workflow while allowing
+	async updates between concurrent workflows.
+	"""
 
 	def __init__(self, name: str, nodes: List[BaseNode], manager: StateManager, full_state_class: Type[BaseModel]):
 		self.name = name
@@ -290,34 +357,67 @@ class WorkflowRunner:
 		self.manager = manager
 		self.full_state_class = full_state_class
 
+	def _apply_local_update(self, state: dict, update: dict) -> dict:
+		"""Apply node update to local state using replace semantics.
+
+		Within a workflow, we use replace (not reducers) since nodes
+		return complete field values. Reducer semantics apply only
+		when merging updates at the global level.
+		"""
+		new_state = dict(state)
+		for field, value in update.items():
+			new_state[field] = value
+		return new_state
+
 	async def stream(self, initial_state: dict, config: RunnableConfig = None) -> AsyncIterator[dict]:
-		"""Execute nodes in order, yield state updates after each."""
+		"""Execute nodes with local accumulation, yield state after each.
+
+		The workflow captures a snapshot at start and accumulates state locally.
+		Updates sync to global StateManager only after all nodes complete.
+		"""
 		config = config or {}
+
+		# Capture initial snapshot from global state
 		self.manager.init_snapshot(initial_state)
 
-		for node in self.nodes:
-			snapshot = self.manager.get_snapshot()
-			state_slice = snapshot.get_slice(node.State)
+		# Local state accumulation (isolated from global during execution)
+		local_state = self.manager.get_snapshot().to_dict()
 
-			update = await node.invoke(state_slice, config)
+		# Track all node updates for global sync at completion
+		pending_updates: List[UpdateMessage] = []
 
-			self.manager.submit_update_sync(UpdateMessage(
-				source=node.name,
-				updates=update
-			))
+		try:
+			for node in self.nodes:
+				# Create slice from local state for this node
+				local_snapshot = Snapshot(local_state)
+				state_slice = local_snapshot.get_slice(node.State)
+
+				# Invoke node
+				update = await node.invoke(state_slice, config)
+
+				# Queue update for global sync later
+				pending_updates.append(UpdateMessage(
+					source=node.name,
+					updates=update
+				))
+
+				# Apply update to local state (replace semantics)
+				local_state = self._apply_local_update(local_state, update)
+
+				yield {node.name: dict(local_state)}
+		finally:
+			# Sync all updates to global at workflow completion
+			for update_msg in pending_updates:
+				self.manager.submit_update_sync(update_msg)
 			await self.manager.process_updates()
 
-			yield {node.name: self.manager.get_snapshot().to_dict()}
-
 	async def run(self, initial_state: dict, config: RunnableConfig = None) -> dict:
-		"""Execute workflow and return final state."""
+		"""Execute workflow and return final state from global snapshot."""
 		config = config or {}
-		final = None
-		async for update in self.stream(initial_state, config):
-			final = update
-		if final:
-			return list(final.values())[0]
-		return initial_state
+		async for _ in self.stream(initial_state, config):
+			pass  # Consume all updates
+		# Return global state after reducers have been applied
+		return self.manager.get_snapshot().to_dict()
 
 
 class BaseWorkflow:
@@ -366,9 +466,15 @@ class BaseWorkflow:
 			{}
 		)
 
-	def compile(self) -> WorkflowRunner:
-		"""Compile workflow into executable runner."""
-		manager = StateManager()
+	def compile(self, clock_interval: Optional[float] = None) -> WorkflowRunner:
+		"""Compile workflow into executable runner.
+
+		Args:
+			clock_interval: If set, enables steady-clock polling mode where
+				state updates are processed on a regular interval (in seconds)
+				rather than after each node execution.
+		"""
+		manager = StateManager(clock_interval=clock_interval)
 		return WorkflowRunner(
 			name=self.name,
 			nodes=self.nodes,
