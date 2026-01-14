@@ -86,9 +86,11 @@ def _messages_reducer(current: list, delta: list) -> list:
 class StateManager:
 	"""Central state coordinator with update queue and reducers.
 
-	Supports two modes:
-	1. Synchronous (default): process_updates() called explicitly after each node
-	2. Polling (clock_interval > 0): background task processes queue on steady clock
+	Workflows submit updates to the queue at block boundaries (workflow completion).
+	Updates are processed via reducers (messages append, others replace).
+
+	Optional polling mode (clock_interval > 0) enables background processing
+	for concurrent workflow scenarios.
 	"""
 
 	def __init__(
@@ -341,11 +343,12 @@ class ScatterNode(BaseNode):
 
 
 class WorkflowRunner:
-	"""Executes compiled workflow with StateManager coordination.
+	"""Executes compiled workflow with local state accumulation.
 
-	Supports two execution modes:
-	1. Synchronous (default): process updates after each node
-	2. Polling: start background polling, nodes submit to queue independently
+	Workflows are basic blocks: nodes within a workflow share local state,
+	and updates sync to global StateManager only at workflow completion.
+	This provides deterministic execution within a workflow while allowing
+	async updates between concurrent workflows.
 	"""
 
 	def __init__(self, name: str, nodes: List[BaseNode], manager: StateManager, full_state_class: Type[BaseModel]):
@@ -354,43 +357,66 @@ class WorkflowRunner:
 		self.manager = manager
 		self.full_state_class = full_state_class
 
+	def _apply_local_update(self, state: dict, update: dict) -> dict:
+		"""Apply node update to local state using replace semantics.
+
+		Within a workflow, we use replace (not reducers) since nodes
+		return complete field values. Reducer semantics apply only
+		when merging updates at the global level.
+		"""
+		new_state = dict(state)
+		for field, value in update.items():
+			new_state[field] = value
+		return new_state
+
 	async def stream(self, initial_state: dict, config: RunnableConfig = None) -> AsyncIterator[dict]:
-		"""Execute nodes in order, yield state updates after each."""
+		"""Execute nodes with local accumulation, yield state after each.
+
+		The workflow captures a snapshot at start and accumulates state locally.
+		Updates sync to global StateManager only after all nodes complete.
+		"""
 		config = config or {}
+
+		# Capture initial snapshot from global state
 		self.manager.init_snapshot(initial_state)
 
-		use_polling = self.manager.clock_interval is not None
+		# Local state accumulation (isolated from global during execution)
+		local_state = self.manager.get_snapshot().to_dict()
 
-		if use_polling:
-			self.manager.start_polling()
+		# Track all node updates for global sync at completion
+		pending_updates: List[UpdateMessage] = []
 
 		try:
 			for node in self.nodes:
-				snapshot = self.manager.get_snapshot()
-				state_slice = snapshot.get_slice(node.State)
+				# Create slice from local state for this node
+				local_snapshot = Snapshot(local_state)
+				state_slice = local_snapshot.get_slice(node.State)
 
+				# Invoke node
 				update = await node.invoke(state_slice, config)
 
-				self.manager.submit_update_sync(UpdateMessage(
+				# Queue update for global sync later
+				pending_updates.append(UpdateMessage(
 					source=node.name,
 					updates=update
 				))
 
-				if not use_polling:
-					# Synchronous mode: process immediately
-					await self.manager.process_updates()
+				# Apply update to local state (replace semantics)
+				local_state = self._apply_local_update(local_state, update)
 
-				yield {node.name: self.manager.get_snapshot().to_dict()}
+				yield {node.name: dict(local_state)}
 		finally:
-			if use_polling:
-				await self.manager.stop_polling()
+			# Sync all updates to global at workflow completion
+			for update_msg in pending_updates:
+				self.manager.submit_update_sync(update_msg)
+			await self.manager.process_updates()
 
 	async def run(self, initial_state: dict, config: RunnableConfig = None) -> dict:
-		"""Execute workflow and return final state."""
+		"""Execute workflow and return final state from global snapshot."""
 		config = config or {}
 		async for _ in self.stream(initial_state, config):
 			pass  # Consume all updates
-		# Return final state from manager (includes any updates processed by stop_polling)
+		# Return global state after reducers have been applied
 		return self.manager.get_snapshot().to_dict()
 
 
