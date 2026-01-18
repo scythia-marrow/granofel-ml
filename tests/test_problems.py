@@ -2,7 +2,7 @@ import pytest
 import tempfile
 from pathlib import Path
 
-from granofel.problems import (
+from examples.intuition import (
     Problem,
     ProblemSet,
     MathProblemSet,
