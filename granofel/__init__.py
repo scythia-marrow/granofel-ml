@@ -6,6 +6,7 @@ from granofel.workflow import (
     Snapshot,
     StateManager,
     UpdateMessage,
+    WorkflowChain,
     WorkflowRunner,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "Snapshot",
     "StateManager",
     "UpdateMessage",
+    "WorkflowChain",
     "WorkflowRunner",
 ]
