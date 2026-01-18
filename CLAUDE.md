@@ -59,7 +59,16 @@ Messages support templating with `{state.field}` syntax:
 
 ### LLM Classes
 
-`LLMClass.REACT` and `LLMClass.REASONING` - nodes specify which LLM type they need, workflow provides LLM dictionary at construction.
+Nodes specify which LLM type they need via `LLMClass`, workflow provides LLM dictionary at construction.
+
+Original types:
+- `LLMClass.REACT`: Agent-style models with tool use
+- `LLMClass.REASONING`: Models with extended reasoning
+
+Distillation pipeline types:
+- `LLMClass.THINKING`: Extended reasoning models (o1, Claude thinking) for planning
+- `LLMClass.TRAINABLE`: Fine-tunable models for compression learning
+- `LLMClass.FAST`: Quick non-thinking models for execution
 
 ## Test Fixtures (`tests/conftest.py`)
 

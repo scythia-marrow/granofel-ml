@@ -29,8 +29,24 @@ def format_messages(messages, s: BaseModel):
 
 
 class LLMClass(str, Enum):
+	"""LLM class types for workflow node binding.
+
+	Original types (backward compatible):
+		REACT: Agent-style models with tool use
+		REASONING: Models with extended reasoning
+
+	Distillation pipeline types:
+		THINKING: Extended reasoning models (o1, Claude thinking) for planning
+		TRAINABLE: Fine-tunable models for compression learning
+		FAST: Quick non-thinking models for execution
+	"""
+	# Original types
 	REACT = "react"
 	REASONING = "reasoning"
+	# Distillation pipeline types
+	THINKING = "thinking"
+	TRAINABLE = "trainable"
+	FAST = "fast"
 
 
 # --- Global Workspace Components ---

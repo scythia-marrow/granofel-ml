@@ -1,5 +1,5 @@
 import pytest
-from granofel.workflow import BaseNode, BaseWorkflow
+from granofel.workflow import BaseNode, BaseWorkflow, LLMClass
 
 
 class ProfessionQuery(BaseNode):
@@ -80,3 +80,54 @@ async def test_node_invoke_standalone(mock_llm_dict):
 
     assert "messages" in result
     assert len(result["messages"]) == 3  # system, human, AI response
+
+
+class PlannerNode(BaseNode):
+    """Node with user_prompt for distillation pipeline test."""
+    class State(BaseNode.State):
+        user_prompt: str = ""
+
+
+@pytest.mark.asyncio
+async def test_llm_class_types_for_distillation_pipeline(mock_llm_dict):
+    """Test that all LLMClass types can be used in a workflow."""
+    # Planner node uses THINKING for extended reasoning
+    planner = PlannerNode([
+        ("system", "Plan the solution step by step."),
+        ("human", "{state.user_prompt}"),
+    ], llm_type=LLMClass.THINKING, name="planner")
+
+    # Compressor node uses TRAINABLE for fine-tuning
+    compressor = BaseNode([
+        lambda x: x,
+        ("system", "Compress the plan to key insights."),
+    ], llm_type=LLMClass.TRAINABLE, name="compressor")
+
+    # Executor node uses FAST for quick execution
+    executor = BaseNode([
+        lambda x: x,
+        ("system", "Execute using the compressed plan."),
+    ], llm_type=LLMClass.FAST, name="executor")
+
+    wf = BaseWorkflow("distill", mock_llm_dict, node=[planner, compressor, executor])
+    runner = wf.compile()
+
+    results = []
+    async for update in runner.stream({"user_prompt": "solve x + 2 = 5"}):
+        results.append(update)
+
+    assert len(results) == 3
+    assert "planner" in results[0]
+    assert "compressor" in results[1]
+    assert "executor" in results[2]
+
+
+def test_llm_class_enum_has_all_types():
+    """Verify all LLMClass types are defined."""
+    # Original types
+    assert LLMClass.REACT.value == "react"
+    assert LLMClass.REASONING.value == "reasoning"
+    # Distillation pipeline types
+    assert LLMClass.THINKING.value == "thinking"
+    assert LLMClass.TRAINABLE.value == "trainable"
+    assert LLMClass.FAST.value == "fast"
