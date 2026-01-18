@@ -497,3 +497,106 @@ class BaseWorkflow:
 			manager=manager,
 			full_state_class=self.full_state_class
 		)
+
+
+class WorkflowChain:
+	"""Sequential execution of workflows with state passing.
+
+	Runs workflows in order, passing state from one to the next.
+	Supports field mapping to rename/transform fields between workflows.
+
+	Example for distillation pipeline:
+		chain = WorkflowChain(
+			workflows=[planner, compressor, executor],
+			mappings=[
+				{"plan": "input_plan"},  # planner output -> compressor input
+				{"compact": "intuition"},  # compressor output -> executor input
+			]
+		)
+		result = await chain.run({"problem": "What is 2+2?"})
+	"""
+
+	def __init__(
+		self,
+		workflows: List[BaseWorkflow],
+		mappings: Optional[List[Dict[str, str]]] = None
+	):
+		"""Initialize workflow chain.
+
+		Args:
+			workflows: Sequence of workflows to execute in order
+			mappings: Optional list of field mappings, one per transition.
+				Each mapping is a dict of {old_name: new_name} for field renaming.
+				Length should be len(workflows) - 1.
+		"""
+		if not workflows:
+			raise ValueError("WorkflowChain requires at least one workflow")
+
+		self.workflows = workflows
+		self.mappings = mappings or []
+
+		# Validate mappings length
+		if self.mappings and len(self.mappings) != len(workflows) - 1:
+			raise ValueError(
+				f"Expected {len(workflows) - 1} mappings for {len(workflows)} workflows, "
+				f"got {len(self.mappings)}"
+			)
+
+	def _apply_mapping(self, state: dict, mapping: Dict[str, str]) -> dict:
+		"""Apply field renaming from mapping."""
+		result = dict(state)
+		for old_name, new_name in mapping.items():
+			if old_name in result:
+				result[new_name] = result.pop(old_name)
+		return result
+
+	async def run(self, initial_state: dict, config: RunnableConfig = None) -> dict:
+		"""Execute all workflows in sequence.
+
+		Args:
+			initial_state: Starting state dict
+			config: Optional runnable config passed to each workflow
+
+		Returns:
+			Final state after all workflows complete
+		"""
+		config = config or {}
+		state = dict(initial_state)
+
+		for i, workflow in enumerate(self.workflows):
+			runner = workflow.compile()
+			state = await runner.run(state, config)
+
+			# Apply field mapping for transition to next workflow
+			if i < len(self.mappings):
+				state = self._apply_mapping(state, self.mappings[i])
+
+		return state
+
+	async def stream(
+		self,
+		initial_state: dict,
+		config: RunnableConfig = None
+	) -> AsyncIterator[Dict[str, dict]]:
+		"""Execute workflows and yield state after each completes.
+
+		Yields:
+			Dict with workflow name as key and state as value
+		"""
+		config = config or {}
+		state = dict(initial_state)
+
+		for i, workflow in enumerate(self.workflows):
+			runner = workflow.compile()
+			state = await runner.run(state, config)
+			yield {workflow.name: dict(state)}
+
+			# Apply field mapping for transition to next workflow
+			if i < len(self.mappings):
+				state = self._apply_mapping(state, self.mappings[i])
+
+	def run_sync(self, initial_state: dict, config: RunnableConfig = None) -> dict:
+		"""Synchronous version of run for testing."""
+		return asyncio.get_event_loop().run_until_complete(
+			self.run(initial_state, config)
+		)
