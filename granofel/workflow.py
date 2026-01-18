@@ -29,8 +29,24 @@ def format_messages(messages, s: BaseModel):
 
 
 class LLMClass(str, Enum):
+	"""LLM class types for workflow node binding.
+
+	Each type represents a distinct capability profile that nodes can require:
+
+	REACT: Agent-style models with tool use capability for interactive tasks
+	REASONING: Models with extended reasoning for complex multi-step problems
+
+	THINKING: Extended reasoning models (o1, Claude thinking) that produce
+		detailed chain-of-thought, used for planning phases
+	TRAINABLE: Fine-tunable models that can learn compressed reasoning patterns
+		from THINKING model outputs
+	FAST: Quick inference models for execution, often distilled from TRAINABLE
+	"""
 	REACT = "react"
 	REASONING = "reasoning"
+	THINKING = "thinking"
+	TRAINABLE = "trainable"
+	FAST = "fast"
 
 
 # --- Global Workspace Components ---

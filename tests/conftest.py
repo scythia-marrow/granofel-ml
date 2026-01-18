@@ -25,8 +25,17 @@ def mock_llm():
 
 @pytest.fixture
 def mock_llm_dict(mock_llm):
-    """LLM dictionary for workflow construction."""
-    return {"react": mock_llm}
+    """LLM dictionary for workflow construction.
+
+    Maps all LLMClass types to the same mock for testing.
+    """
+    return {
+        "react": mock_llm,
+        "reasoning": mock_llm,
+        "thinking": mock_llm,
+        "trainable": mock_llm,
+        "fast": mock_llm,
+    }
 
 
 @pytest.fixture
