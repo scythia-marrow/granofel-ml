@@ -27,9 +27,7 @@ def mock_llm():
 def mock_llm_dict(mock_llm):
     """LLM dictionary for workflow construction.
 
-    Provides mock LLM for all LLMClass types:
-    - react, reasoning: Original types
-    - thinking, trainable, fast: Distillation pipeline types
+    Maps all LLMClass types to the same mock for testing.
     """
     return {
         "react": mock_llm,

@@ -83,9 +83,9 @@ async def test_node_invoke_standalone(mock_llm_dict):
 
 
 class PlannerNode(BaseNode):
-    """Node with user_prompt for distillation pipeline test."""
+    """Node with problem_statement for distillation pipeline test."""
     class State(BaseNode.State):
-        user_prompt: str = ""
+        problem_statement: str = ""
 
 
 @pytest.mark.asyncio
@@ -94,7 +94,7 @@ async def test_llm_class_types_for_distillation_pipeline(mock_llm_dict):
     # Planner node uses THINKING for extended reasoning
     planner = PlannerNode([
         ("system", "Plan the solution step by step."),
-        ("human", "{state.user_prompt}"),
+        ("human", "{state.problem_statement}"),
     ], llm_type=LLMClass.THINKING, name="planner")
 
     # Compressor node uses TRAINABLE for fine-tuning
@@ -113,7 +113,7 @@ async def test_llm_class_types_for_distillation_pipeline(mock_llm_dict):
     runner = wf.compile()
 
     results = []
-    async for update in runner.stream({"user_prompt": "solve x + 2 = 5"}):
+    async for update in runner.stream({"problem_statement": "solve x + 2 = 5"}):
         results.append(update)
 
     assert len(results) == 3
