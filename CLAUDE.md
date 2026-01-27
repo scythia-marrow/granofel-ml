@@ -6,6 +6,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Granofel is a messages-centric framework for building multimodal LLM agents using LangChain. It provides a workflow system with state management, node composition, and parallel execution patterns.
 
+## Best Practices
+
+Use feature branches, pull requests, and the chainlink cli issue tracker.
+
+A general session will proceed as follows:
+
+1) Start a chainlink session, decide which issue to work on
+2) Mark the issue as active
+3) Create or checkout an associated issue branch named GRAN-<num>\_description
+4) Work on the issue until completion
+5) Create a PR to main
+6) Retrieve merge review comments from the request, implement fixes. Remember to read both general comments from the PR page as well as individual code critiques.
+7) Verify that the PR has been merged
+8) Close the chainlink issue
+9) Add any new issues discovered / out of scope for this session
+10) End the session
+
+Be conscientious, NEVER close an issue before the request has been merged.
+
+Separate concerns in both planning and code. ALWAYS have only one concern per PR. NEVER submit PR that depends on another PR.
+
+Prefer functional programming style to OOP style.
+
+Support dependency injection! This means NEVER construct a component class directly, ALWAYS take component classes as arguments. Keep argument lists short. If argument lists get too unweildy that means we need to either use configuration files or restructure the code.
+
+Don't Repeat Yourself (DRY).
+
 ## Commands
 
 ```bash

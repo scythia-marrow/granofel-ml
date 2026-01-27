@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 ### Changed
+- Remove duplicate problems.py from granofel package (#23)
 - Fix PR #2 review feedback for steady-clock polling (#12)
 - Add tests for ScatterNode parallel execution (#6)
 - Add gather mechanism to collect results from parallel instances (#5)

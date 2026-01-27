@@ -1,6 +1,6 @@
 import asyncio
 from enum import Enum
-from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator, Optional
+from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator, Optional, TypeVar
 
 from langchain_core.runnables import Runnable, RunnableConfig
 from pydantic import BaseModel
@@ -357,7 +357,6 @@ class ScatterNode(BaseNode):
 			self.invoke(state, config)
 		)
 
-
 class WorkflowRunner:
 	"""Executes compiled workflow with local state accumulation.
 
@@ -367,10 +366,15 @@ class WorkflowRunner:
 	async updates between concurrent workflows.
 	"""
 
-	def __init__(self, name: str, nodes: List[BaseNode], manager: StateManager, full_state_class: Type[BaseModel]):
+	def __init__(self,
+		name: str,
+		nodes: List[BaseNode],
+		STATE_MANAGER: TypeVar('STATE_MANAGER',bound=StateManager),
+		full_state_class: Type[BaseModel]
+	):
 		self.name = name
 		self.nodes = nodes
-		self.manager = manager
+		self.manager = STATE_MANAGER()
 		self.full_state_class = full_state_class
 
 	def _apply_local_update(self, state: dict, update: dict) -> dict:
@@ -482,19 +486,20 @@ class BaseWorkflow:
 			{}
 		)
 
-	def compile(self, clock_interval: Optional[float] = None) -> WorkflowRunner:
+	def compile(self,
+		STATE_MANAGER : TypeVar('STATE_MANAGER',bound=StateManager) = StateManager,
+		WORKFLOW_RUNNER : TypeVar('WORKFLOW_RUNNER',bound=WorkflowRunner) = WorkflowRunner
+	) -> WorkflowRunner:
 		"""Compile workflow into executable runner.
 
 		Args:
-			clock_interval: If set, enables steady-clock polling mode where
-				state updates are processed on a regular interval (in seconds)
-				rather than after each node execution.
+			STATE_MANAGER: The class (possibly dependency-injected) for managing state, must subclass StateManager
+			WORKFLOW_RUNNER: The class (possibly dependency-injected) for running a workflow, must subclass WorkflowRunner
 		"""
-		manager = StateManager(clock_interval=clock_interval)
-		return WorkflowRunner(
+		return WORKFLOW_RUNNER(
 			name=self.name,
 			nodes=self.nodes,
-			manager=manager,
+			STATE_MANAGER=STATE_MANAGER,
 			full_state_class=self.full_state_class
 		)
 

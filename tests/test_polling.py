@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 from granofel.workflow import BaseNode, BaseWorkflow, StateManager, UpdateMessage
+from tool.dependency_injector import DependencyInjector
 
 
 class SimpleNode(BaseNode):
@@ -96,7 +97,8 @@ async def test_workflow_with_polling_mode(mock_llm_dict):
 	node2 = SimpleNode([lambda x: x, ("human", "second")], name="second")
 
 	wf = BaseWorkflow("test", mock_llm_dict, node=[node1, node2])
-	runner = wf.compile(clock_interval=0.01)
+	DI = DependencyInjector([(StateManager, [], dict(clock_interval=0.01))])
+	runner = wf.compile(DI.inject(StateManager))
 
 	result = await runner.run({"counter": 0})
 
@@ -111,7 +113,8 @@ async def test_workflow_polling_stops_on_completion(mock_llm_dict):
 	node = SimpleNode([("human", "msg")], name="node")
 
 	wf = BaseWorkflow("test", mock_llm_dict, node=[node])
-	runner = wf.compile(clock_interval=0.01)
+	DI = DependencyInjector([(StateManager, [], dict(clock_interval=0.01))])
+	runner = wf.compile(DI.inject(StateManager))
 
 	await runner.run({"counter": 0})
 
@@ -130,7 +133,8 @@ async def test_workflow_polling_stops_on_error(mock_llm_dict):
 	node.bind_llm(mock_llm_dict)
 
 	wf = BaseWorkflow("test", mock_llm_dict, node=[node])
-	runner = wf.compile(clock_interval=0.01)
+	DI = DependencyInjector([(StateManager, [], dict(clock_interval=0.01))])
+	runner = wf.compile(DI.inject(StateManager))
 
 	with pytest.raises(RuntimeError, match="Intentional failure"):
 		await runner.run({})
@@ -146,7 +150,7 @@ async def test_polling_accumulates_messages(mock_llm_dict):
 	node2 = SimpleNode([lambda x: x, ("human", "second")], name="second")
 
 	wf = BaseWorkflow("test", mock_llm_dict, node=[node1, node2])
-	runner = wf.compile(clock_interval=0.01)
+	runner = wf.compile()
 
 	result = await runner.run({})
 
