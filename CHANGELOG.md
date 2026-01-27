@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Refactor BaseWorkflow.compile to accept WorkflowRunner via dependency injection (#25)
 - Add ScatterNode for parallel workflow execution (#2)
 
 ### Fixed

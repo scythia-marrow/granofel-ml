@@ -258,3 +258,31 @@ def test_scatter_rejects_invalid_input():
 
 	with pytest.raises(TypeError, match="nodes must be"):
 		ScatterNode({"not": "valid"}, name="invalid")
+
+
+def test_scatter_warns_on_llm_rebinding(mock_llm_dict):
+	"""Test that ScatterNode warns when pre-built workflow LLMs are overwritten."""
+	node = ItemProcessor([("human", "Process {state.item}")], name="processor")
+	workflow = BaseWorkflow("existing", mock_llm_dict, node=[node])
+
+	scatter = ScatterNode(workflow, name="scatter")
+
+	# Create a different LLM dict
+	different_llm_dict = {"react": MagicMock()}
+
+	with pytest.warns(UserWarning, match="Original LLM bindings are being overwritten"):
+		scatter.bind_llm(different_llm_dict)
+
+
+def test_scatter_no_warning_when_same_llm_dict(mock_llm_dict):
+	"""Test that no warning when bind_llm receives the same dict."""
+	node = ItemProcessor([("human", "Process {state.item}")], name="processor")
+	workflow = BaseWorkflow("existing", mock_llm_dict, node=[node])
+
+	scatter = ScatterNode(workflow, name="scatter")
+
+	# Same dict reference - no warning expected
+	import warnings
+	with warnings.catch_warnings():
+		warnings.simplefilter("error")
+		scatter.bind_llm(mock_llm_dict)

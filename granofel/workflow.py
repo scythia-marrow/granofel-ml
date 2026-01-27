@@ -1,4 +1,5 @@
 import asyncio
+import warnings
 from enum import Enum
 from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator, Optional, TypeVar
 
@@ -300,7 +301,18 @@ class ScatterNode(BaseNode):
 			)
 
 	def bind_llm(self, llm_dict: Dict[str, Runnable]):
-		"""Bind LLM and create internal workflow."""
+		"""Bind LLM and create internal workflow.
+
+		Warns if this ScatterNode was constructed with a pre-built workflow
+		that had different LLM bindings, as those will be overwritten.
+		"""
+		if self._llm_dict is not None and self._llm_dict is not llm_dict:
+			warnings.warn(
+				f"ScatterNode '{self.name}' was constructed with a pre-built workflow. "
+				f"Original LLM bindings are being overwritten by parent workflow.",
+				UserWarning,
+				stacklevel=2
+			)
 		self._llm_dict = llm_dict
 		self._workflow = BaseWorkflow(
 			name=f"{self.name}_scatter",

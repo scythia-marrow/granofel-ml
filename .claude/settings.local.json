@@ -15,7 +15,12 @@
       "Bash(chainlink session work:*)",
       "Bash(chainlink session start:*)",
       "Bash(python -m pytest:*)",
-      "Bash(./venv/bin/python -m pytest:*)"
+      "Bash(./venv/bin/python -m pytest:*)",
+      "Bash(chainlink ready:*)",
+      "Bash(chainlink show:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
