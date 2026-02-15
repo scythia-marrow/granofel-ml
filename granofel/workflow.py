@@ -250,10 +250,9 @@ class BaseNode:
 
 	def invoke_sync(self, state: State, config: RunnableConfig = None) -> dict:
 		"""Synchronous invoke for testing or non-async contexts."""
-		config = config or {}
-		fmt = format_messages(self.messages, state)
-		response = self.llm.invoke(fmt, config)
-		return {"messages": fmt + [response]}
+		return asyncio.get_event_loop().run_until_complete(
+			self.invoke(state, config)
+		)
 
 
 class ScatterNode(BaseNode):
@@ -555,6 +554,20 @@ class WorkflowChain:
 				result[new_name] = result.pop(old_name)
 		return result
 
+	async def _execute_chain(self, initial_state: dict, config: RunnableConfig = None) -> AsyncIterator[tuple[dict, str]]:
+		"""Execute workflows in sequence, yielding (state, workflow_name) after each."""
+		config = config or {}
+		state = dict(initial_state)
+
+		for i, workflow in enumerate(self.workflows):
+			runner = workflow.compile()
+			state = await runner.run(state, config)
+			yield state, workflow.name
+
+			# Apply field mapping for transition to next workflow
+			if i < len(self.mappings):
+				state = self._apply_mapping(state, self.mappings[i])
+
 	async def run(self, initial_state: dict, config: RunnableConfig = None) -> dict:
 		"""Execute all workflows in sequence.
 
@@ -565,17 +578,9 @@ class WorkflowChain:
 		Returns:
 			Final state after all workflows complete
 		"""
-		config = config or {}
-		state = dict(initial_state)
-
-		for i, workflow in enumerate(self.workflows):
-			runner = workflow.compile()
-			state = await runner.run(state, config)
-
-			# Apply field mapping for transition to next workflow
-			if i < len(self.mappings):
-				state = self._apply_mapping(state, self.mappings[i])
-
+		state = initial_state
+		async for state, _ in self._execute_chain(initial_state, config):
+			continue  # consume all steps, keep final state
 		return state
 
 	async def stream(
@@ -588,17 +593,8 @@ class WorkflowChain:
 		Yields:
 			Dict with workflow name as key and state as value
 		"""
-		config = config or {}
-		state = dict(initial_state)
-
-		for i, workflow in enumerate(self.workflows):
-			runner = workflow.compile()
-			state = await runner.run(state, config)
-			yield {workflow.name: dict(state)}
-
-			# Apply field mapping for transition to next workflow
-			if i < len(self.mappings):
-				state = self._apply_mapping(state, self.mappings[i])
+		async for state, name in self._execute_chain(initial_state, config):
+			yield {name: dict(state)}
 
 	def run_sync(self, initial_state: dict, config: RunnableConfig = None) -> dict:
 		"""Synchronous version of run for testing."""
