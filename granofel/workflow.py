@@ -1,4 +1,5 @@
 import asyncio
+from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator, Optional, TypeVar
 
@@ -222,7 +223,31 @@ class JITConfig(BaseModel):
 		arbitrary_types_allowed = True
 
 
-class BaseNode:
+class NodeABC(ABC):
+	"""Abstract interface for workflow nodes."""
+
+	@abstractmethod
+	def bind_llm(self, llm_dict: Dict[str, Runnable]):
+		raise NotImplementedError
+
+	@abstractmethod
+	async def invoke(self, state, config: RunnableConfig = None) -> dict:
+		raise NotImplementedError
+
+	@abstractmethod
+	def invoke_sync(self, state, config: RunnableConfig = None) -> dict:
+		raise NotImplementedError
+
+
+class RunnerABC(ABC):
+	"""Abstract interface for workflow runners."""
+
+	@abstractmethod
+	async def run(self, initial_state: dict, config: RunnableConfig = None) -> dict:
+		raise NotImplementedError
+
+
+class BaseNode(NodeABC):
 	class State(BaseModel):
 		messages: list = []
 
@@ -356,7 +381,7 @@ class ScatterNode(BaseNode):
 			self.invoke(state, config)
 		)
 
-class WorkflowRunner:
+class WorkflowRunner(RunnerABC):
 	"""Executes compiled workflow with local state accumulation.
 
 	Workflows are basic blocks: nodes within a workflow share local state,
@@ -503,7 +528,7 @@ class BaseWorkflow:
 		)
 
 
-class WorkflowChain:
+class WorkflowChain(RunnerABC):
 	"""Sequential execution of workflows with state passing.
 
 	Runs workflows in order, passing state from one to the next.

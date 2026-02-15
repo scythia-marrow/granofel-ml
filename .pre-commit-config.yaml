@@ -4,7 +4,7 @@ repos:
       - id: cpitd
         name: cpitd (clone detection)
         entry: venv-cpitd/bin/cpitd
-        args: ["granofel/", "tool/", "examples/", "--ignore", "tests/*"]
+        args: ["granofel/", "tool/", "examples/", "--ignore", "tests/*", "--suppress", "*@abstractmethod*"]
         language: system
         pass_filenames: false
         always_run: true
