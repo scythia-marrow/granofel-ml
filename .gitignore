@@ -137,6 +137,7 @@ celerybeat.pid
 # Environments
 .env
 .claude
+CLAUDE.md
 .chainlink
 .envrc
 .venv
