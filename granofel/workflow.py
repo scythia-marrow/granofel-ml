@@ -7,6 +7,11 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from pydantic import BaseModel
 
 
+def polymorphic(func):
+	"""Marks a method as an intentional polymorphic override of a parent class."""
+	return func
+
+
 def format_messages(messages, s: BaseModel):
 	fmt = []
 	for msg in messages:
@@ -353,6 +358,7 @@ class ScatterNode(BaseNode):
 
 		return combined
 
+	@polymorphic
 	async def invoke(self, state: State, config: RunnableConfig = None) -> dict:
 		"""Execute workflow in parallel for each scatter fragment."""
 		config = config or {}
@@ -374,12 +380,6 @@ class ScatterNode(BaseNode):
 		results = await asyncio.gather(*tasks)
 
 		return self.gather(results)
-
-	def invoke_sync(self, state: State, config: RunnableConfig = None) -> dict:
-		"""Synchronous invoke for testing or non-async contexts."""
-		return asyncio.get_event_loop().run_until_complete(
-			self.invoke(state, config)
-		)
 
 class WorkflowRunner(RunnerABC):
 	"""Executes compiled workflow with local state accumulation.

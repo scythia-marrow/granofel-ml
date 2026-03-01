@@ -97,7 +97,7 @@ def _extract_last_number(text: str) -> Optional[float]:
 
 def _make_math_validator(tolerance: float = 1e-6) -> Validator:
     """Create a validator that compares extracted numeric answers within tolerance."""
-    def validate(problem: Problem, solution: str) -> bool:
+    def validate_math(problem: Problem, solution: str) -> bool:
         if problem.answer is None:
             return False
         extracted = _extract_last_number(solution)
@@ -105,12 +105,12 @@ def _make_math_validator(tolerance: float = 1e-6) -> Validator:
             return False
         expected = float(problem.answer)
         return abs(extracted - expected) <= tolerance
-    return validate
+    return validate_math
 
 
 def _make_code_validator(timeout: float = 5.0) -> Validator:
     """Create a validator that runs test cases against solution code."""
-    def validate(problem: Problem, solution: str) -> bool:
+    def validate_code(problem: Problem, solution: str) -> bool:
         test_cases = problem.metadata.get("test_cases", [])
         if not test_cases:
             return False
@@ -131,7 +131,7 @@ def _make_code_validator(timeout: float = 5.0) -> Validator:
             except (subprocess.TimeoutExpired, subprocess.SubprocessError):
                 return False
         return True
-    return validate
+    return validate_code
 
 
 # --- Convenience constructors (preserve existing API) ---

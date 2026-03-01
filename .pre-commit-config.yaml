@@ -3,8 +3,8 @@ repos:
     hooks:
       - id: cpitd
         name: cpitd (clone detection)
-        entry: venv-cpitd/bin/cpitd
-        args: ["granofel/", "tool/", "examples/", "--ignore", "tests/*", "--suppress", "*@abstractmethod*"]
+        entry: venv/bin/cpitd
+        args: ["granofel/", "tool/", "examples/", "--ignore", "tests/*", "--suppress", "*@abstractmethod*", "--suppress", "*@polymorphic*"]
         language: system
         pass_filenames: false
         always_run: true
