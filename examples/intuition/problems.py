@@ -10,6 +10,9 @@ import json
 import re
 import subprocess
 
+# Semantic type alias for problem validators
+Validator = Callable[["Problem", str], bool]
+
 
 class Problem:
     """A single problem with its metadata."""
@@ -50,20 +53,10 @@ class ProblemSet(ABC):
 
     @abstractmethod
     def __iter__(self) -> Iterator[Problem]:
-        """Yield problems from the dataset."""
         raise NotImplementedError("Subclasses must implement __iter__")
 
     @abstractmethod
     def validate(self, problem: Problem, solution: str) -> bool:
-        """Check if the solution is correct for the given problem.
-
-        Args:
-            problem: The problem being solved
-            solution: The proposed solution string
-
-        Returns:
-            True if the solution is correct, False otherwise
-        """
         raise NotImplementedError("Subclasses must implement validate")
 
     def __len__(self) -> int:
@@ -71,20 +64,12 @@ class ProblemSet(ABC):
         return sum(1 for _ in self)
 
 
-class MathProblemSet(ProblemSet):
-    """Problem set for math problems with numeric answers.
+class ListProblemSet(ProblemSet):
+    """Problem set backed by an in-memory list with a pluggable validator."""
 
-    Validates by extracting numeric values from solutions and comparing
-    to the expected answer within a tolerance.
-    """
-
-    def __init__(
-        self,
-        problems: list[Problem],
-        tolerance: float = 1e-6
-    ):
+    def __init__(self, problems: list[Problem], validator: Validator):
         self._problems = problems
-        self._tolerance = tolerance
+        self._validator = validator
 
     def __iter__(self) -> Iterator[Problem]:
         yield from self._problems
@@ -93,28 +78,69 @@ class MathProblemSet(ProblemSet):
         return len(self._problems)
 
     def validate(self, problem: Problem, solution: str) -> bool:
-        """Validate by comparing extracted numeric answer."""
+        return self._validator(problem, solution)
+
+
+# --- Validators ---
+
+def _extract_last_number(text: str) -> Optional[float]:
+    """Extract the last number from text (common answer format)."""
+    pattern = r"-?\d+\.?\d*(?:[eE][+-]?\d+)?"
+    matches = re.findall(pattern, text)
+    if not matches:
+        return None
+    try:
+        return float(matches[-1])
+    except ValueError:
+        return None
+
+
+def _make_math_validator(tolerance: float = 1e-6) -> Validator:
+    """Create a validator that compares extracted numeric answers within tolerance."""
+    def validate_math(problem: Problem, solution: str) -> bool:
         if problem.answer is None:
             return False
-
-        extracted = self._extract_number(solution)
+        extracted = _extract_last_number(solution)
         if extracted is None:
             return False
-
         expected = float(problem.answer)
-        return abs(extracted - expected) <= self._tolerance
+        return abs(extracted - expected) <= tolerance
+    return validate_math
 
-    def _extract_number(self, text: str) -> Optional[float]:
-        """Extract the last number from text (common answer format)."""
-        # Match integers, decimals, and scientific notation
-        pattern = r"-?\d+\.?\d*(?:[eE][+-]?\d+)?"
-        matches = re.findall(pattern, text)
-        if not matches:
-            return None
-        try:
-            return float(matches[-1])
-        except ValueError:
-            return None
+
+def _make_code_validator(timeout: float = 5.0) -> Validator:
+    """Create a validator that runs test cases against solution code."""
+    def validate_code(problem: Problem, solution: str) -> bool:
+        test_cases = problem.metadata.get("test_cases", [])
+        if not test_cases:
+            return False
+        for test_case in test_cases:
+            test_input = test_case.get("input", "")
+            expected_output = test_case.get("output", "")
+            test_code = f"{solution}\n\n{test_input}"
+            try:
+                result = subprocess.run(
+                    ["python", "-c", test_code],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                actual_output = result.stdout.strip()
+                if actual_output != expected_output.strip():
+                    return False
+            except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+                return False
+        return True
+    return validate_code
+
+
+# --- Convenience constructors (preserve existing API) ---
+
+class MathProblemSet(ListProblemSet):
+    """Problem set for math problems with numeric answers."""
+
+    def __init__(self, problems: list[Problem], tolerance: float = 1e-6):
+        super().__init__(problems, _make_math_validator(tolerance))
 
     @classmethod
     def from_list(cls, items: list[tuple[str, float]], **kwargs) -> "MathProblemSet":
@@ -126,54 +152,11 @@ class MathProblemSet(ProblemSet):
         return cls(problems, **kwargs)
 
 
-class CodeProblemSet(ProblemSet):
-    """Problem set for code problems with test case validation.
+class CodeProblemSet(ListProblemSet):
+    """Problem set for code problems with test case validation."""
 
-    Each problem contains test cases that are run against the solution.
-    Supports Python code execution with configurable timeout.
-    """
-
-    def __init__(
-        self,
-        problems: list[Problem],
-        timeout: float = 5.0
-    ):
-        self._problems = problems
-        self._timeout = timeout
-
-    def __iter__(self) -> Iterator[Problem]:
-        yield from self._problems
-
-    def __len__(self) -> int:
-        return len(self._problems)
-
-    def validate(self, problem: Problem, solution: str) -> bool:
-        """Validate by running test cases against the solution code."""
-        test_cases = problem.metadata.get("test_cases", [])
-        if not test_cases:
-            return False
-
-        for test_case in test_cases:
-            test_input = test_case.get("input", "")
-            expected_output = test_case.get("output", "")
-
-            # Construct test program
-            test_code = f"{solution}\n\n{test_input}"
-
-            try:
-                result = subprocess.run(
-                    ["python", "-c", test_code],
-                    capture_output=True,
-                    text=True,
-                    timeout=self._timeout,
-                )
-                actual_output = result.stdout.strip()
-                if actual_output != expected_output.strip():
-                    return False
-            except (subprocess.TimeoutExpired, subprocess.SubprocessError):
-                return False
-
-        return True
+    def __init__(self, problems: list[Problem], timeout: float = 5.0):
+        super().__init__(problems, _make_code_validator(timeout))
 
     @classmethod
     def from_list(
@@ -199,11 +182,7 @@ class JSONLProblemSet(ProblemSet):
     The validator function receives the problem and solution for custom validation.
     """
 
-    def __init__(
-        self,
-        path: Path | str,
-        validator: Callable[[Problem, str], bool],
-    ):
+    def __init__(self, path: Path | str, validator: Validator):
         self._path = Path(path)
         self._validator = validator
         self._problems: Optional[list[Problem]] = None
@@ -231,7 +210,6 @@ class JSONLProblemSet(ProblemSet):
         return len(self._load())
 
     def validate(self, problem: Problem, solution: str) -> bool:
-        """Validate using the custom validator function."""
         return self._validator(problem, solution)
 
     @classmethod

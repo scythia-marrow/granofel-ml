@@ -1,9 +1,15 @@
 import asyncio
+from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Dict, Sequence, Callable, Any, Type, AsyncIterator, Optional, TypeVar
 
 from langchain_core.runnables import Runnable, RunnableConfig
 from pydantic import BaseModel
+
+
+def polymorphic(func):
+	"""Marks a method as an intentional polymorphic override of a parent class."""
+	return func
 
 
 def format_messages(messages, s: BaseModel):
@@ -222,7 +228,31 @@ class JITConfig(BaseModel):
 		arbitrary_types_allowed = True
 
 
-class BaseNode:
+class NodeABC(ABC):
+	"""Abstract interface for workflow nodes."""
+
+	@abstractmethod
+	def bind_llm(self, llm_dict: Dict[str, Runnable]):
+		raise NotImplementedError
+
+	@abstractmethod
+	async def invoke(self, state, config: RunnableConfig = None) -> dict:
+		raise NotImplementedError
+
+	@abstractmethod
+	def invoke_sync(self, state, config: RunnableConfig = None) -> dict:
+		raise NotImplementedError
+
+
+class RunnerABC(ABC):
+	"""Abstract interface for workflow runners."""
+
+	@abstractmethod
+	async def run(self, initial_state: dict, config: RunnableConfig = None) -> dict:
+		raise NotImplementedError
+
+
+class BaseNode(NodeABC):
 	class State(BaseModel):
 		messages: list = []
 
@@ -250,10 +280,9 @@ class BaseNode:
 
 	def invoke_sync(self, state: State, config: RunnableConfig = None) -> dict:
 		"""Synchronous invoke for testing or non-async contexts."""
-		config = config or {}
-		fmt = format_messages(self.messages, state)
-		response = self.llm.invoke(fmt, config)
-		return {"messages": fmt + [response]}
+		return asyncio.get_event_loop().run_until_complete(
+			self.invoke(state, config)
+		)
 
 
 class ScatterNode(BaseNode):
@@ -329,6 +358,7 @@ class ScatterNode(BaseNode):
 
 		return combined
 
+	@polymorphic
 	async def invoke(self, state: State, config: RunnableConfig = None) -> dict:
 		"""Execute workflow in parallel for each scatter fragment."""
 		config = config or {}
@@ -351,13 +381,7 @@ class ScatterNode(BaseNode):
 
 		return self.gather(results)
 
-	def invoke_sync(self, state: State, config: RunnableConfig = None) -> dict:
-		"""Synchronous invoke for testing or non-async contexts."""
-		return asyncio.get_event_loop().run_until_complete(
-			self.invoke(state, config)
-		)
-
-class WorkflowRunner:
+class WorkflowRunner(RunnerABC):
 	"""Executes compiled workflow with local state accumulation.
 
 	Workflows are basic blocks: nodes within a workflow share local state,
@@ -504,7 +528,7 @@ class BaseWorkflow:
 		)
 
 
-class WorkflowChain:
+class WorkflowChain(RunnerABC):
 	"""Sequential execution of workflows with state passing.
 
 	Runs workflows in order, passing state from one to the next.
@@ -555,6 +579,20 @@ class WorkflowChain:
 				result[new_name] = result.pop(old_name)
 		return result
 
+	async def _execute_chain(self, initial_state: dict, config: RunnableConfig = None) -> AsyncIterator[tuple[dict, str]]:
+		"""Execute workflows in sequence, yielding (state, workflow_name) after each."""
+		config = config or {}
+		state = dict(initial_state)
+
+		for i, workflow in enumerate(self.workflows):
+			runner = workflow.compile()
+			state = await runner.run(state, config)
+			yield state, workflow.name
+
+			# Apply field mapping for transition to next workflow
+			if i < len(self.mappings):
+				state = self._apply_mapping(state, self.mappings[i])
+
 	async def run(self, initial_state: dict, config: RunnableConfig = None) -> dict:
 		"""Execute all workflows in sequence.
 
@@ -565,17 +603,9 @@ class WorkflowChain:
 		Returns:
 			Final state after all workflows complete
 		"""
-		config = config or {}
-		state = dict(initial_state)
-
-		for i, workflow in enumerate(self.workflows):
-			runner = workflow.compile()
-			state = await runner.run(state, config)
-
-			# Apply field mapping for transition to next workflow
-			if i < len(self.mappings):
-				state = self._apply_mapping(state, self.mappings[i])
-
+		state = initial_state
+		async for state, _ in self._execute_chain(initial_state, config):
+			continue  # consume all steps, keep final state
 		return state
 
 	async def stream(
@@ -588,17 +618,8 @@ class WorkflowChain:
 		Yields:
 			Dict with workflow name as key and state as value
 		"""
-		config = config or {}
-		state = dict(initial_state)
-
-		for i, workflow in enumerate(self.workflows):
-			runner = workflow.compile()
-			state = await runner.run(state, config)
-			yield {workflow.name: dict(state)}
-
-			# Apply field mapping for transition to next workflow
-			if i < len(self.mappings):
-				state = self._apply_mapping(state, self.mappings[i])
+		async for state, name in self._execute_chain(initial_state, config):
+			yield {name: dict(state)}
 
 	def run_sync(self, initial_state: dict, config: RunnableConfig = None) -> dict:
 		"""Synchronous version of run for testing."""
